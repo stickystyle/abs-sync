@@ -137,11 +137,13 @@ class SyncOrchestrator:
                 )
 
         # Step 6: Move books to Synced collection
-        synced_collection = self._get_or_create_synced_collection(
-            download_collection.library_id
+        book_ids = [book.id for book in download_collection.books]
+        synced_collection, was_created = self._get_or_create_synced_collection(
+            download_collection.library_id, book_ids
         )
         if synced_collection:
-            self._move_to_synced(download_collection, synced_collection)
+            # If collection was just created, books were added during creation
+            self._move_to_synced(download_collection, synced_collection, already_added=was_created)
 
         return result
 
@@ -201,6 +203,7 @@ class SyncOrchestrator:
         logger.info(f"Applying metadata: {dl_book.source_book.metadata.title}")
 
         # Find the book in destination by path
+        logger.debug(f"Looking for book in destination with path: {dl_book.rel_path}")
         dest_book = self.dest.find_book_by_path(dl_book.rel_path)
         if not dest_book:
             logger.warning(
@@ -208,29 +211,51 @@ class SyncOrchestrator:
             )
             return False
 
+        logger.debug(f"Found destination book: {dest_book.id}")
+
         # Build and apply metadata payload
         payload = MetadataService.metadata_to_api_payload(
             dl_book.source_book.metadata
         )
-        return self.dest.update_metadata(dest_book.id, payload)
+        logger.debug(f"Metadata payload: {payload}")
+
+        success = self.dest.update_metadata(dest_book.id, payload)
+        if success:
+            logger.debug(f"Successfully applied metadata to {dest_book.id}")
+        else:
+            logger.warning(f"Failed to apply metadata to {dest_book.id}")
+        return success
 
     def _get_or_create_synced_collection(
-        self, library_id: str
-    ) -> Optional[Collection]:
-        """Get or create the Synced collection."""
+        self, library_id: str, book_ids: list[str]
+    ) -> tuple[Optional[Collection], bool]:
+        """Get or create the Synced collection.
+
+        Returns:
+            Tuple of (Collection or None, was_created bool)
+        """
         return self.source.get_or_create_collection(
-            library_id, self.config.synced_collection_name
+            library_id, self.config.synced_collection_name, book_ids=book_ids
         )
 
     def _move_to_synced(
-        self, download_col: Collection, synced_col: Collection
+        self,
+        download_col: Collection,
+        synced_col: Collection,
+        already_added: bool = False,
     ) -> None:
-        """Move all processed books from Download to Synced collection."""
+        """Move all processed books from Download to Synced collection.
+
+        Args:
+            download_col: Source collection to move from
+            synced_col: Destination collection to move to
+            already_added: If True, books were already added when creating synced_col
+        """
         logger.info("Moving books to Synced collection...")
 
         for book in download_col.books:
-            # Add to Synced
-            if self.source.add_book_to_collection(synced_col.id, book.id):
+            # Add to Synced (skip if already added during creation)
+            if already_added or self.source.add_book_to_collection(synced_col.id, book.id):
                 # Remove from Download
                 self.source.remove_book_from_collection(download_col.id, book.id)
                 logger.debug(f"Moved to Synced: {book.metadata.title}")

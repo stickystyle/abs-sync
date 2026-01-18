@@ -130,7 +130,10 @@ class DestinationClient(ABSClient):
         Returns:
             True if successful
         """
+        logger.debug(f"Updating metadata for item {item_id}")
         result = self._patch(f"/api/items/{item_id}/media", data=payload)
+        if result is None:
+            logger.debug(f"Metadata update failed for {item_id}")
         return result is not None
 
     def find_book_by_path(self, rel_path: str) -> Optional[Book]:
