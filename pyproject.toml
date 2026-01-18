@@ -1,0 +1,17 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "abs-sync"
+version = "0.1.0"
+description = "Audiobookshelf Sync Tool - Synchronizes audiobooks between ABS servers"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "python-dotenv>=1.0.0",
+    "requests>=2.28.0",
+]
+
+[project.scripts]
+abs-sync = "abs_sync.cli:main"
