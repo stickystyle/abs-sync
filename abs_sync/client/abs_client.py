@@ -3,6 +3,8 @@
 import logging
 from typing import Any, Optional
 
+import json
+
 import requests
 from requests.exceptions import ConnectionError, HTTPError, Timeout
 
@@ -88,10 +90,17 @@ class ABSClient:
             response.raise_for_status()
             # Some endpoints return empty body on success
             if response.content:
-                return response.json()
+                try:
+                    return response.json()
+                except json.JSONDecodeError:
+                    # Some endpoints return non-JSON (e.g., "Scan started")
+                    logger.debug(f"Non-JSON response from POST {endpoint}: {response.text[:100]}")
+                    return {"success": True, "message": response.text}
             return {"success": True}
         except HTTPError as e:
             logger.error(f"HTTP error {e.response.status_code} for POST {url}")
+            if e.response.content:
+                logger.debug(f"Response body: {e.response.text}")
             return None
         except ConnectionError:
             logger.error(f"Connection failed to {self.server_url}")

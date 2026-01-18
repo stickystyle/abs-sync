@@ -52,12 +52,15 @@ class SourceClient(ABSClient):
             ))
         return collections
 
-    def get_collection(self, collection_id: str) -> Optional[Collection]:
+    def get_collection(
+        self, collection_id: str, library_id: Optional[str] = None
+    ) -> Optional[Collection]:
         """
         Get a collection with its books.
 
         Args:
             collection_id: The collection ID
+            library_id: Optional library ID to use as fallback if not in response
 
         Returns:
             Collection with books or None
@@ -68,11 +71,32 @@ class SourceClient(ABSClient):
 
         books = []
         for book_data in data.get("books", []):
-            books.append(MetadataService.extract_book_from_response(book_data))
+            # Collection endpoint may return collapsed book data without full metadata.
+            # Fetch each book individually to ensure we have complete metadata.
+            book_id = book_data.get("id")
+            if book_id:
+                logger.debug(f"Fetching full metadata for book {book_id}")
+                full_book = self.get_item(book_id)
+                if full_book:
+                    logger.debug(
+                        f"Got metadata: title={full_book.metadata.title}, "
+                        f"authors={full_book.metadata.authors}, "
+                        f"narrators={full_book.metadata.narrators}"
+                    )
+                    books.append(full_book)
+                else:
+                    # Fall back to parsing the collection data if individual fetch fails
+                    logger.debug(f"Failed to fetch book {book_id}, using collection data")
+                    books.append(MetadataService.extract_book_from_response(book_data))
+            else:
+                books.append(MetadataService.extract_book_from_response(book_data))
+
+        # Use libraryId from response, falling back to provided library_id
+        resolved_library_id = data.get("libraryId") or library_id or ""
 
         return Collection(
             id=data.get("id", ""),
-            library_id=data.get("libraryId", ""),
+            library_id=resolved_library_id,
             name=data.get("name", ""),
             description=data.get("description"),
             books=books,
@@ -94,7 +118,7 @@ class SourceClient(ABSClient):
         collections = self.get_collections(library_id)
         for col in collections:
             if col.name.lower() == name.lower():
-                return self.get_collection(col.id)
+                return self.get_collection(col.id, library_id)
         return None
 
     def add_book_to_collection(self, collection_id: str, book_id: str) -> bool:
@@ -128,7 +152,11 @@ class SourceClient(ABSClient):
         return self._delete(f"/api/collections/{collection_id}/book/{book_id}")
 
     def create_collection(
-        self, library_id: str, name: str, description: str = ""
+        self,
+        library_id: str,
+        name: str,
+        description: str = "",
+        book_ids: Optional[list[str]] = None,
     ) -> Optional[Collection]:
         """
         Create a new collection.
@@ -137,18 +165,18 @@ class SourceClient(ABSClient):
             library_id: The library ID
             name: Collection name
             description: Optional description
+            book_ids: List of book IDs to include (API requires at least one)
 
         Returns:
             Created Collection or None
         """
-        data = self._post(
-            "/api/collections",
-            data={
-                "libraryId": library_id,
-                "name": name,
-                "description": description,
-            }
-        )
+        payload = {
+            "libraryId": library_id,
+            "name": name,
+            "description": description,
+            "books": book_ids or [],
+        }
+        data = self._post("/api/collections", data=payload)
         if data:
             return Collection(
                 id=data.get("id", ""),
@@ -159,21 +187,27 @@ class SourceClient(ABSClient):
         return None
 
     def get_or_create_collection(
-        self, library_id: str, name: str
-    ) -> Optional[Collection]:
+        self, library_id: str, name: str, book_ids: Optional[list[str]] = None
+    ) -> tuple[Optional[Collection], bool]:
         """
         Get a collection by name, creating it if it doesn't exist.
 
         Args:
             library_id: The library ID
             name: Collection name
+            book_ids: Book IDs to include when creating (API requires at least one)
 
         Returns:
-            Collection or None on error
+            Tuple of (Collection or None, was_created bool)
         """
         collection = self.find_collection_by_name(library_id, name)
         if collection:
-            return collection
+            return collection, False
+
+        if not book_ids:
+            logger.error(f"Cannot create collection '{name}': at least one book required")
+            return None, False
 
         logger.info(f"Creating collection: {name}")
-        return self.create_collection(library_id, name)
+        created = self.create_collection(library_id, name, book_ids=book_ids)
+        return created, created is not None
